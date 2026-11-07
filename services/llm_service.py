@@ -1,28 +1,19 @@
+
 import requests
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
 MODEL = "qwen3:1.7b"
 
 
-def generate_response(message):
+def generate_response(messages):
     payload = {
         "model": MODEL,
         "think": False,
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "You are Jessica, a friendly, intelligent personal AI assistant. "
-                    "Be conversational, helpful, and concise. "
-                    "Adapt your responses to the user's preferences."
-                )
-            },
-            {
-                "role": "user",
-                "content": message
-            }
-        ],
-        "stream": False
+        "messages": messages,
+        "stream": False,
+        "options": {
+            "temperature": 0.7
+        }
     }
 
     try:
