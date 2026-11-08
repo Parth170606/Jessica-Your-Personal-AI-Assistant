@@ -140,3 +140,67 @@ class MemoryManager:
 
         self.memories = previous_memories
         return False
+
+    
+
+    def update_existing_memory(self, old_content, new_content):
+        if not isinstance(old_content, str) or not isinstance(new_content, str):
+            return False
+
+        old_content = old_content.strip()
+        new_content = new_content.strip()
+
+        if not old_content or not new_content:
+            return False
+
+        index = next(
+            (
+                i for i, memory in enumerate(self.memories)
+                if memory == old_content
+            ),
+            None
+        )
+
+        if index is None:
+            return False
+
+        return self.update_memory(index + 1, new_content)
+
+
+    def update_memory_by_subject(self, subject, new_content):
+        if not isinstance(subject, str) or not isinstance(new_content, str):
+            return False
+
+        subject = " ".join(subject.casefold().split())
+        new_content = " ".join(new_content.split())
+
+        if not subject or not new_content:
+            return False
+
+        prefix = f"my {subject} is "
+
+        matching = [
+            index for index, memory in enumerate(self.memories)
+            if memory.casefold().startswith(prefix)
+        ]
+
+        if not matching:
+            return False
+
+        previous = self.memories.copy()
+        first_index = matching[0]
+
+        updated = []
+        for index, memory in enumerate(self.memories):
+            if index == first_index:
+                updated.append(new_content)
+            elif index not in matching:
+                updated.append(memory)
+
+        self.memories = updated
+
+        if self.save_memories():
+            return True
+
+        self.memories = previous
+        return False
