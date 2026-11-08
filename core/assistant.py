@@ -137,7 +137,58 @@ class JessicaAssistant:
             )
 
             if fact:
-                return f"Your {subject} is {fact.group(1).strip().rstrip('.')}."
+                return (
+                    f"Your {subject} is "
+                    f"{fact.group(1).strip().rstrip('.')}."
+                )
+
+        return None
+
+    def handle_memory_command(self, user_message):
+        command = " ".join(user_message.casefold().split())
+
+        view_commands = [
+            "what do you remember about me",
+            "what do you know about me",
+            "show my memories",
+            "list my memories",
+            "view my memories"
+        ]
+
+        if command.rstrip("?.!") in view_commands:
+            memories = self.memory_manager.get_memories()
+
+            if not memories:
+                return "I don't have any personal memories saved yet."
+
+            return "Here's what I remember about you:\n" + "\n".join(
+                f"{index}. {memory}"
+                for index, memory in enumerate(memories, start=1)
+            )
+
+        forget_match = re.match(
+            r"^(?:please\s+)?forget\s+(?:about\s+)?(.+?)\s*[.!?]*$",
+            command
+        )
+
+        if forget_match:
+            subject = forget_match.group(1).strip()
+            subject = subject.removeprefix("my ")
+            subject = subject.replace("favourite", "favorite")
+
+            memories = self.memory_manager.get_memories()
+
+            for index, memory in enumerate(memories, start=1):
+                normalized = memory.casefold().replace(
+                    "favourite", "favorite"
+                )
+
+                if subject in normalized:
+                    if self.memory_manager.forget_memory(index):
+                        self.system_prompt = self.build_system_prompt()
+                        return f"I've forgotten that memory: {memory}"
+
+            return f"I couldn't find a saved memory about {subject}."
 
         return None
 
@@ -147,25 +198,31 @@ class JessicaAssistant:
 
         user_message = user_message.strip()
 
-        self.extract_memories(user_message)
+        memory_response = self.handle_memory_command(user_message)
 
-        direct_answer = self.answer_from_memory(user_message)
+        if memory_response is not None:
+            response = memory_response
 
-        if direct_answer:
-            response = direct_answer
         else:
-            self.system_prompt = self.build_system_prompt()
+            self.extract_memories(user_message)
 
-            messages = (
-                [self.system_prompt]
-                + self.messages[-20:]
-                + [{"role": "user", "content": user_message}]
-            )
+            direct_answer = self.answer_from_memory(user_message)
 
-            response = generate_response(messages)
+            if direct_answer:
+                response = direct_answer
+            else:
+                self.system_prompt = self.build_system_prompt()
 
-            if response.startswith("Connection error:"):
-                return response
+                messages = (
+                    [self.system_prompt]
+                    + self.messages[-20:]
+                    + [{"role": "user", "content": user_message}]
+                )
+
+                response = generate_response(messages)
+
+                if response.startswith("Connection error:"):
+                    return response
 
         self.messages.extend([
             {"role": "user", "content": user_message},
