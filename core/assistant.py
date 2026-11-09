@@ -156,37 +156,41 @@ class JessicaAssistant:
         except (json.JSONDecodeError, TypeError):
             return
 
+    
     def answer_from_memory(self, user_message):
-        question = user_message.casefold()
-        question = question.replace("favourite", "favorite")
-        question = re.sub(r"[^\w\s']", " ", question)
-        question = " ".join(question.split())
-
-        match = re.search(
-            r"^(?:what is|what's|tell me)\s+my\s+(.+?)(?:\s+again)?$",
-            question
-        )
-
-        if not match:
+        if not re.match(
+            r"^(what|which|who|where|when|do|does|did|can|could|"
+            r"tell me|remind me|have i|am i)\b",
+            user_message.strip(),
+            re.IGNORECASE
+        ):
             return None
 
-        subject = match.group(1).strip()
+        results = self.memory_manager.search_relevant_memories(
+            user_message,
+            limit=3
+        )
 
-        for memory in self.memory_manager.get_memories():
-            normalized = memory.casefold().replace("favourite", "favorite")
+        if not results:
+            return None
 
-            fact = re.search(
-                rf"\bmy\s+{re.escape(subject)}\s+(?:is|are)\s+(.+)",
-                normalized
-            )
+        best_match = results[0]
 
-            if fact:
-                return (
-                    f"Your {subject} is "
-                    f"{fact.group(1).strip().rstrip('.')}."
-                )
+        if best_match["score"] < 0.5:
+            return None
 
-        return None
+        if (
+            len(results) > 1
+            and results[1]["score"] == best_match["score"]
+        ):
+            return None
+
+        memory = best_match["memory"]
+
+        if memory.casefold().startswith("my "):
+            return "Your " + memory[3:]
+
+        return f"I remember: {memory}"
 
     def handle_memory_command(self, user_message):
         command = " ".join(user_message.casefold().split())

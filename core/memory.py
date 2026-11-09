@@ -103,6 +103,86 @@ class MemoryManager:
             for index, memory in enumerate(self.memories, start=1)
             if keyword in memory.casefold()
         ]
+    
+    def normalize_text(self, text):
+        if not isinstance(text, str):
+            return []
+
+        text = text.casefold()
+
+        words = {
+            "programming": "coding",
+            "programmer": "coding",
+            "developer": "coding",
+            "develop": "coding",
+            "language": "coding",
+            "languages": "coding",
+            "sport": "sports",
+            "game": "sports",
+            "games": "sports",
+            "enjoy": "like",
+            "love": "like",
+        }
+
+        ignored_words = {
+            "what", "which", "who", "where", "when",
+            "is", "are", "am", "the", "a", "an",
+            "my", "me", "i", "do", "does", "did",
+            "you", "your", "about", "in", "on", "of",
+            "to", "for", "and", "or", "remember",
+            "tell", "know", "can", "could", "would",
+            "please", "currently", "like", "prefer",
+        }
+
+        result = []
+
+        for word in text.split():
+            word = word.strip(".,!?;:'\"()[]{}")
+
+            if not word or word in ignored_words:
+                continue
+
+            word = words.get(word, word)
+            result.append(word)
+
+        return result
+
+    def search_relevant_memories(self, query, limit=3):
+        if not isinstance(query, str) or not query.strip():
+            return []
+
+        if not isinstance(limit, int) or limit < 1:
+            return []
+
+        query_words = set(self.normalize_text(query))
+
+        if not query_words:
+            return []
+
+        results = []
+
+        for index, memory in enumerate(self.memories, start=1):
+            memory_words = set(self.normalize_text(memory))
+
+            matches = query_words.intersection(memory_words)
+
+            if not matches:
+                continue
+
+            score = len(matches) / len(query_words)
+
+            results.append({
+                "number": index,
+                "memory": memory,
+                "score": round(score, 3)
+            })
+
+        results.sort(
+            key=lambda item: item["score"],
+            reverse=True
+        )
+
+        return results[:limit]
 
     def get_memories(self):
         return self.memories.copy()
