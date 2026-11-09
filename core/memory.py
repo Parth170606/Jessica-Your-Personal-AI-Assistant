@@ -1,4 +1,4 @@
-
+import re
 import json
 from pathlib import Path
 
@@ -102,6 +102,57 @@ class MemoryManager:
             (index, memory)
             for index, memory in enumerate(self.memories, start=1)
             if keyword in memory.casefold()
+        ]
+
+    def categorize_memory(self, content):
+        if not isinstance(content, str) or not content.strip():
+            return "General"
+
+        text = content.casefold()
+
+        categories = {
+            "Education": [
+                "student", "study", "studying", "college",
+                "university", "school", "semester",
+                "engineering", "degree", "exam", "course"
+            ],
+            "Work": [
+                "work", "working", "job", "career",
+                "internship", "project", "developing",
+                "developer", "building", "profession"
+            ],
+            "Preferences": [
+                "favorite", "favourite", "prefer",
+                "preference", "dislike"
+            ],
+            "Hobbies": [
+                "hobby", "hobbies", "guitar", "harmonium",
+                "playing", "singing", "reading", "gaming",
+                "drawing", "painting", "sports"
+            ],
+            "Personal": [
+                "family", "parents", "brother", "sister",
+                "birthday", "born", "age", "live", "living",
+                "hometown", "country"
+            ]
+        }
+
+        for category, keywords in categories.items():
+            if any(keyword in text for keyword in keywords):
+                return category
+
+        return "General"
+
+    def get_memories_by_category(self, category):
+        if not isinstance(category, str) or not category.strip():
+            return []
+
+        category = category.strip().casefold()
+
+        return [
+            memory
+            for memory in self.memories
+            if self.categorize_memory(memory).casefold() == category
         ]
     
     def normalize_text(self, text):
@@ -246,7 +297,6 @@ class MemoryManager:
 
         return self.update_memory(index + 1, new_content)
 
-
     def update_memory_by_subject(self, subject, new_content):
         if not isinstance(subject, str) or not isinstance(new_content, str):
             return False
@@ -284,3 +334,48 @@ class MemoryManager:
 
         self.memories = previous
         return False
+
+    def detect_memory_conflict(self, content):
+        if not isinstance(content, str) or not content.strip():
+            return None
+
+        pattern = r"^my\s+(.+?)\s+is\s+(.+?)[.!?]*$"
+
+        match = re.match(
+            pattern,
+            " ".join(content.split()),
+            re.IGNORECASE
+        )
+
+        if not match:
+            return None
+
+        subject = " ".join(match.group(1).casefold().split())
+        new_value = match.group(2).strip().rstrip(".!?").casefold()
+
+        for memory in self.memories:
+            existing_match = re.match(
+                pattern,
+                memory.strip(),
+                re.IGNORECASE
+            )
+
+            if not existing_match:
+                continue
+
+            existing_subject = " ".join(
+                existing_match.group(1).casefold().split()
+            )
+
+            existing_value = (
+                existing_match.group(2).strip().rstrip(".!?").casefold()
+            )
+
+            if subject == existing_subject and new_value != existing_value:
+                return {
+                    "subject": subject,
+                    "existing_memory": memory,
+                    "new_memory": content.strip()
+                }
+
+        return None

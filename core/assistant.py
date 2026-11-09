@@ -1,3 +1,4 @@
+
 import json
 import re
 from pathlib import Path
@@ -10,6 +11,7 @@ class JessicaAssistant:
 
     def __init__(self):
         self.memory_manager = MemoryManager()
+        self.pending_memory_update = None
 
         self.memory_dir = Path(__file__).resolve().parent.parent / "data"
         self.memory_file = self.memory_dir / "conversation_history.json"
@@ -76,8 +78,56 @@ class JessicaAssistant:
         except OSError:
             print("Jessica: Unable to save conversation history.")
 
+    def handle_pending_memory_confirmation(self, user_message):
+        if self.pending_memory_update is None:
+            return None
+
+        answer = " ".join(
+            user_message.casefold().strip().rstrip(".!?").split()
+        )
+
+        positive = {
+            "yes", "yes please", "update it",
+            "please update it", "go ahead",
+            "that's correct", "correct"
+        }
+
+        negative = {
+            "no", "no thanks", "keep it",
+            "don't update", "do not update",
+            "leave it", "keep the old one"
+        }
+
+        if answer in positive:
+            conflict = self.pending_memory_update
+
+            updated = self.memory_manager.update_memory_by_subject(
+                conflict["subject"],
+                conflict["new_memory"]
+            )
+
+            self.pending_memory_update = None
+
+            if updated:
+                self.system_prompt = self.build_system_prompt()
+                return (
+                    f"Done! I've updated your memory to: "
+                    f"{conflict['new_memory']}"
+                )
+
+            return (
+                "I couldn't update that memory. "
+                "Your existing information is unchanged."
+            )
+
+        if answer in negative:
+            self.pending_memory_update = None
+            return "No problem! I'll keep your existing memory unchanged."
+
+        return None
+
     def extract_memories(self, user_message):
-        
+
         update_match = re.match(
             r"^my\s+(.+?)\s+is\s+(.+?)(?:\s+now)?[.!?]*$",
             user_message.strip(),
@@ -90,12 +140,26 @@ class JessicaAssistant:
 
             new_memory = f"My {subject} is {value.rstrip('.!?')}."
 
+            conflict = self.memory_manager.detect_memory_conflict(
+                new_memory
+            )
+
+            if conflict:
+                self.pending_memory_update = conflict
+
+                return (
+                    f"I currently remember: {conflict['existing_memory']}\n"
+                    f"Would you like me to update it to: "
+                    f"{conflict['new_memory']}?"
+                )
+
             if self.memory_manager.update_memory_by_subject(
                 subject,
                 new_memory
             ):
                 self.system_prompt = self.build_system_prompt()
-                return
+                return None
+
         prompt = [
             {
                 "role": "system",
@@ -126,13 +190,13 @@ class JessicaAssistant:
         result = generate_response(prompt)
 
         if result.startswith("Connection error:"):
-            return
+            return None
 
         try:
             data = json.loads(result)
 
             if not isinstance(data, dict):
-                return
+                return None
 
             action = data.get("action")
 
@@ -140,7 +204,8 @@ class JessicaAssistant:
                 new_memory = data.get("new_memory")
 
                 if isinstance(new_memory, str):
-                    self.memory_manager.add_memory(new_memory)
+                    if self.memory_manager.add_memory(new_memory):
+                        self.system_prompt = self.build_system_prompt()
 
             elif action == "update":
                 old_memory = data.get("old_memory")
@@ -154,9 +219,10 @@ class JessicaAssistant:
                         self.system_prompt = self.build_system_prompt()
 
         except (json.JSONDecodeError, TypeError):
-            return
+            return None
 
-    
+        return None
+
     def answer_from_memory(self, user_message):
         if not re.match(
             r"^(what|which|who|where|when|do|does|did|can|could|"
@@ -252,25 +318,38 @@ class JessicaAssistant:
             response = memory_response
 
         else:
-            self.extract_memories(user_message)
+            confirmation_response = (
+                self.handle_pending_memory_confirmation(user_message)
+            )
 
-            direct_answer = self.answer_from_memory(user_message)
+            if confirmation_response is not None:
+                response = confirmation_response
 
-            if direct_answer:
-                response = direct_answer
             else:
-                self.system_prompt = self.build_system_prompt()
+                memory_update_response = self.extract_memories(user_message)
 
-                messages = (
-                    [self.system_prompt]
-                    + self.messages[-20:]
-                    + [{"role": "user", "content": user_message}]
-                )
+                if memory_update_response is not None:
+                    response = memory_update_response
 
-                response = generate_response(messages)
+                else:
+                    direct_answer = self.answer_from_memory(user_message)
 
-                if response.startswith("Connection error:"):
-                    return response
+                    if direct_answer:
+                        response = direct_answer
+
+                    else:
+                        self.system_prompt = self.build_system_prompt()
+
+                        messages = (
+                            [self.system_prompt]
+                            + self.messages[-20:]
+                            + [{"role": "user", "content": user_message}]
+                        )
+
+                        response = generate_response(messages)
+
+                        if response.startswith("Connection error:"):
+                            return response
 
         self.messages.extend([
             {"role": "user", "content": user_message},
