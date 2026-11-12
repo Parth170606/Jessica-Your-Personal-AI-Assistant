@@ -1,3 +1,4 @@
+
 import re
 import json
 from pathlib import Path
@@ -9,7 +10,29 @@ class MemoryManager:
         self.memory_dir = Path(__file__).resolve().parent.parent / "data"
         self.memory_file = self.memory_dir / "personal_memory.json"
         self.memory_dir.mkdir(parents=True, exist_ok=True)
-        self.memories = self.load_memories()
+
+        loaded_memories = self.load_memories()
+        self.memories = []
+        seen = set()
+
+        for memory in loaded_memories:
+            normalized = self.normalize_memory_content(memory)
+
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                self.memories.append(memory)
+
+        if len(self.memories) != len(loaded_memories):
+            self.save_memories()
+
+    def normalize_memory_content(self, content):
+        if not isinstance(content, str):
+            return ""
+
+        content = " ".join(content.casefold().split())
+        content = content.rstrip(".,!?;:").strip()
+
+        return content
 
     def load_memories(self):
         if not self.memory_file.exists():
@@ -53,9 +76,12 @@ class MemoryManager:
         if not content:
             return False
 
-        normalized = content.casefold()
+        normalized = self.normalize_memory_content(content)
 
-        if any(memory.casefold() == normalized for memory in self.memories):
+        if any(
+            self.normalize_memory_content(memory) == normalized
+            for memory in self.memories
+        ):
             return False
 
         self.memories.append(content)
@@ -75,10 +101,11 @@ class MemoryManager:
         if not content or number < 1 or number > len(self.memories):
             return False
 
-        normalized = content.casefold()
+        normalized = self.normalize_memory_content(content)
 
         if any(
-            index != number - 1 and memory.casefold() == normalized
+            index != number - 1
+            and self.normalize_memory_content(memory) == normalized
             for index, memory in enumerate(self.memories)
         ):
             return False
@@ -154,7 +181,7 @@ class MemoryManager:
             for memory in self.memories
             if self.categorize_memory(memory).casefold() == category
         ]
-    
+
     def normalize_text(self, text):
         if not isinstance(text, str):
             return []
@@ -214,7 +241,6 @@ class MemoryManager:
 
         for index, memory in enumerate(self.memories, start=1):
             memory_words = set(self.normalize_text(memory))
-
             matches = query_words.intersection(memory_words)
 
             if not matches:
@@ -272,8 +298,6 @@ class MemoryManager:
         self.memories = previous_memories
         return False
 
-    
-
     def update_existing_memory(self, old_content, new_content):
         if not isinstance(old_content, str) or not isinstance(new_content, str):
             return False
@@ -321,6 +345,7 @@ class MemoryManager:
         first_index = matching[0]
 
         updated = []
+
         for index, memory in enumerate(self.memories):
             if index == first_index:
                 updated.append(new_content)

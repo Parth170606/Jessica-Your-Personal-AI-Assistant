@@ -1,11 +1,18 @@
 
 import json
 import re
+import time
 from pathlib import Path
 
+import requests
+
 from core.context import ConversationContextManager
-from services.llm_service import generate_response
 from core.memory import MemoryManager
+from services.llm_service import (
+    generate_response,
+    stream_response,
+    get_last_metrics
+)
 
 
 class JessicaAssistant:
@@ -13,6 +20,8 @@ class JessicaAssistant:
     def __init__(self):
         self.memory_manager = MemoryManager()
         self.pending_memory_update = None
+        self.last_timings = {}
+        self.last_ollama_metrics = {}
 
         self.memory_dir = Path(__file__).resolve().parent.parent / "data"
         self.memory_file = self.memory_dir / "conversation_history.json"
@@ -54,84 +63,92 @@ class JessicaAssistant:
         }
 
     def update_conversation_context(self, user_message):
-        recent_messages = self.messages[-8:]
 
-        conversation = "\n".join(
-            f"{message['role'].upper()}: {message['content']}"
-            for message in recent_messages
-        )
+        message = user_message.strip()
 
-        existing_context = self.context_manager.get_context()
+        if not message:
+            return
 
-        prompt = [
-            {
-                "role": "system",
-                "content": (
-                    "You are Jessica's conversation context extractor.\n"
-                    "Extract the main topic and important entities from the conversation.\n\n"
-                    "RULES:\n"
-                    "1. Preserve the existing topic for follow-up questions.\n"
-                    "2. Change the topic only when the user clearly changes subjects.\n"
-                    "3. Extract important names, technologies, concepts, objects, "
-                    "and keywords explicitly mentioned in the conversation.\n"
-                    "4. Include entities from the NEW USER MESSAGE.\n"
-                    "5. For 'How does sunlight help plants?', entities must include "
-                    "'sunlight' and 'plants'.\n"
-                    "6. Do not return an empty list when identifiable entities exist.\n"
-                    "7. Never invent entities.\n\n"
-                    "Return ONLY valid JSON with exactly two keys:\n"
-                    '{"topic": "topic name", "entities": ["entity1", "entity2"]}\n'
-                )
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"EXISTING CONTEXT:\n"
-                    f"{json.dumps(existing_context, ensure_ascii=False)}\n\n"
-                    f"RECENT CONVERSATION:\n{conversation}\n\n"
-                    f"NEW USER MESSAGE:\n{user_message}"
-                )
-            }
+        follow_up_patterns = [
+            r"^(why|how so|what do you mean)\??$",
+            r"^(explain more|tell me more|elaborate|continue)\.?$",
+            r"^(can you explain further|go on)\??$",
+            r"^(what about it|how about it)\??$"
         ]
 
-        result = generate_response(prompt)
-
-        if not isinstance(result, str):
+        if any(
+            re.match(pattern, message, re.IGNORECASE)
+            for pattern in follow_up_patterns
+        ):
             return
 
-        if result.startswith("Connection error:"):
+        stopwords = {
+            "what", "when", "where", "which", "who", "whom",
+            "why", "how", "does", "did", "doing", "do",
+            "is", "are", "was", "were", "the", "a", "an",
+            "of", "in", "on", "at", "to", "for", "from",
+            "and", "or", "but", "with", "about", "into",
+            "can", "could", "would", "should", "will",
+            "please", "explain", "describe", "tell", "show",
+            "me", "my", "i", "you", "your", "it", "this",
+            "that", "these", "those", "there", "here",
+            "more", "further", "again", "also", "then",
+            "let", "now", "talk", "discuss", "change",
+            "topic", "switch", "to", "isn't", "aren't",
+            "its", "it's", "they", "them", "their",
+            "have", "has", "had", "am", "be", "been",
+            "just", "really", "very", "some", "any"
+        }
+
+        words = re.findall(
+            r"[A-Za-z][A-Za-z0-9+#.-]*",
+            message
+        )
+
+        entities = [
+            word for word in words
+            if word.casefold() not in stopwords
+            and len(word) > 2
+        ]
+
+        if not entities:
             return
 
-        try:
-            match = re.search(r"\{.*\}", result, re.DOTALL)
+        entities = list(dict.fromkeys(entities))[:5]
 
-            if not match:
-                return
+        existing_context = self.context_manager.get_context()
+        current_topic = existing_context.get("current_topic")
 
-            data = json.loads(match.group())
+        explicit_topic_change = re.search(
+            r"\b(?:new topic|change topic|switch topic|"
+            r"let's talk about|lets talk about|"
+            r"now let's discuss|now lets discuss)\b",
+            message,
+            re.IGNORECASE
+        )
 
-            if not isinstance(data, dict):
-                return
+        topic = " ".join(entities[:4])
 
-            topic = data.get("topic")
-            entities = data.get("entities")
+        if current_topic and not explicit_topic_change:
 
-            if topic is not None and not isinstance(topic, str):
-                return
+            current_words = {
+                word.casefold()
+                for word in re.findall(r"\w+", current_topic)
+            }
 
-            if not isinstance(entities, list):
-                return
+            new_words = {
+                word.casefold()
+                for word in entities
+            }
 
-            if not all(isinstance(entity, str) for entity in entities):
-                return
+            if current_words.intersection(new_words):
+                topic = current_topic
 
-            self.context_manager.update_context(topic, entities)
-            self.system_prompt = self.build_system_prompt()
-
-        except (json.JSONDecodeError, TypeError, AttributeError):
-            return
+        self.context_manager.update_context(topic, entities)
+        self.system_prompt = self.build_system_prompt()
 
     def load_memory(self):
+
         if not self.memory_file.exists():
             return
 
@@ -151,6 +168,7 @@ class JessicaAssistant:
             print("Jessica: Unable to load previous conversation history.")
 
     def save_memory(self):
+
         try:
             temp_file = self.memory_file.with_suffix(".tmp")
 
@@ -168,6 +186,7 @@ class JessicaAssistant:
             print("Jessica: Unable to save conversation history.")
 
     def handle_pending_memory_confirmation(self, user_message):
+
         if self.pending_memory_update is None:
             return None
 
@@ -259,6 +278,27 @@ class JessicaAssistant:
                 self.system_prompt = self.build_system_prompt()
                 return None
 
+        memory_indicators = re.compile(
+            r"\b(?:"
+            r"i am|i'm|i have|i've|"
+            r"i enjoy|i love|i like|i prefer|"
+            r"i dislike|i hate|i study|"
+            r"i work|i built|i created|"
+            r"i completed|i graduated|"
+            r"i currently|i recently|"
+            r"i want to learn|i plan to|"
+            r"my favorite|my favourite|"
+            r"my hobby|my goal"
+            r")\b",
+            re.IGNORECASE
+        )
+
+        if (
+            not memory_indicators.search(user_message)
+            or user_message.endswith("?")
+        ):
+            return None
+
         prompt = [
             {
                 "role": "system",
@@ -327,7 +367,10 @@ class JessicaAssistant:
 
         result = generate_response(prompt)
 
-        if not isinstance(result, str) or result.startswith("Connection error:"):
+        if (
+            not isinstance(result, str)
+            or result.startswith("Connection error:")
+        ):
             return None
 
         try:
@@ -387,6 +430,7 @@ class JessicaAssistant:
         return None
 
     def answer_from_memory(self, user_message):
+
         if not re.match(
             r"^(what|which|who|where|when|do|does|did|can|could|"
             r"tell me|remind me|have i|am i)\b",
@@ -422,6 +466,7 @@ class JessicaAssistant:
         return f"I remember: {memory}"
 
     def handle_memory_command(self, user_message):
+
         command = " ".join(user_message.casefold().split())
 
         view_commands = [
@@ -469,16 +514,21 @@ class JessicaAssistant:
 
         return None
 
-    def chat(self, user_message):
+    def chat_stream(self, user_message):
+
         if not isinstance(user_message, str) or not user_message.strip():
-            return "Please enter a message."
+            yield "Please enter a message."
+            return
 
         user_message = user_message.strip()
+        timings = {}
+        total_start = time.perf_counter()
 
         memory_response = self.handle_memory_command(user_message)
 
         if memory_response is not None:
             response = memory_response
+            yield response
 
         else:
             confirmation_response = (
@@ -487,37 +537,93 @@ class JessicaAssistant:
 
             if confirmation_response is not None:
                 response = confirmation_response
+                yield response
 
             else:
+                stage_start = time.perf_counter()
                 self.update_conversation_context(user_message)
+                timings["context_extraction"] = (
+                    time.perf_counter() - stage_start
+                )
 
+                stage_start = time.perf_counter()
                 memory_update_response = self.extract_memories(user_message)
+                timings["memory_extraction"] = (
+                    time.perf_counter() - stage_start
+                )
 
                 if memory_update_response is not None:
                     response = memory_update_response
+                    yield response
 
                 else:
                     direct_answer = self.answer_from_memory(user_message)
 
                     if direct_answer:
                         response = direct_answer
+                        yield response
 
                     else:
                         self.system_prompt = self.build_system_prompt()
 
                         messages = (
                             [self.system_prompt]
-                            + self.messages[-20:]
+                            + self.messages[-8:]
                             + [{"role": "user", "content": user_message}]
                         )
 
-                        response = generate_response(messages)
+                        history = messages[1:-1]
+                        memory_text = self.memory_manager.get_memory_context()
+                        context_text = self.context_manager.get_context_prompt()
 
-                        if (
-                            isinstance(response, str)
-                            and response.startswith("Connection error:")
-                        ):
-                            return response
+                        print("\n--- Prompt Breakdown ---")
+                        print(f"Saved memory characters: {len(memory_text)}")
+                        print(f"Conversation context characters: {len(context_text)}")
+                        print(f"History messages sent: {len(history)}")
+                        print(
+                            "History characters sent: "
+                            f"{sum(len(message['content']) for message in history)}"
+                        )
+                        print(
+                            "System prompt characters: "
+                            f"{len(messages[0]['content'])}"
+                        )
+
+                        response_parts = []
+                        generation_start = time.perf_counter()
+                        first_token_time = None
+                        self.last_ollama_metrics = {}
+
+                        try:
+                            for chunk in stream_response(messages):
+
+                                if first_token_time is None:
+                                    first_token_time = (
+                                        time.perf_counter() - generation_start
+                                    )
+
+                                response_parts.append(chunk)
+                                yield chunk
+
+                        except (
+                            requests.exceptions.RequestException,
+                            json.JSONDecodeError
+                        ) as error:
+                            yield f"\nConnection error: {error}"
+                            return
+
+                        self.last_ollama_metrics = get_last_metrics()
+                        response = "".join(response_parts)
+
+                        timings["first_token"] = (
+                            first_token_time
+                            if first_token_time is not None
+                            else None
+                        )
+
+                        timings["response_generation"] = (
+                            time.perf_counter() - generation_start
+                        )
 
         self.messages.extend([
             {"role": "user", "content": user_message},
@@ -527,7 +633,11 @@ class JessicaAssistant:
         self.messages = self.messages[-20:]
         self.save_memory()
 
-        return response
+        timings["total"] = time.perf_counter() - total_start
+        self.last_timings = timings
+
+    def chat(self, user_message):
+        return "".join(self.chat_stream(user_message))
 
     def reset_conversation(self):
         self.messages = []
@@ -535,4 +645,7 @@ class JessicaAssistant:
         self.context_manager.clear_context()
         self.system_prompt = self.build_system_prompt()
 
-        return "Conversation history and context cleared. Personal memories are preserved."
+        return (
+            "Conversation history and context cleared. "
+            "Personal memories are preserved."
+        )

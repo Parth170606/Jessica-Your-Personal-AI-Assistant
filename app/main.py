@@ -29,9 +29,28 @@ def main():
             print("\nJessica:", jessica.reset_conversation())
             continue
 
-        response = jessica.chat(user_input)
+        print("\nJessica: ", end="", flush=True)
 
-        print("\nJessica:", response, "\n")
+        for chunk in jessica.chat_stream(user_input):
+            print(chunk, end="", flush=True)
+
+        if jessica.last_timings:
+            print("\n\n--- Performance Diagnostics ---")
+
+            for stage, duration in jessica.last_timings.items():
+                if duration is not None:
+                    print(f"{stage}: {duration:.2f}s")
+
+        if jessica.last_ollama_metrics:
+            print("\n--- Ollama Diagnostics ---")
+
+            for metric, value in jessica.last_ollama_metrics.items():
+                if isinstance(value, float):
+                    print(f"{metric}: {value:.2f}")
+                else:
+                    print(f"{metric}: {value}")
+
+        print("\n")
 
 
 if __name__ == "__main__":
